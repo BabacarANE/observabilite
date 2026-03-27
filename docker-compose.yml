@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  # ─────────────────────────────────────────
+  # Observability stack
+  # ─────────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    container_name: jaeger
+    ports:
+      - "16686:16686"  # UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - observability
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - observability
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    ports:
+      - "3003:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    networks:
+      - observability
+
+  # ─────────────────────────────────────────
+  # Application services
+  # ─────────────────────────────────────────
+  service-users:
+    build: ./service-users
+    container_name: service-users
+    ports:
+      - "3002:3002"
+    environment:
+      - PORT=3002
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318/v1/traces
+      - OTEL_SERVICE_NAME=service-users
+    depends_on:
+      - jaeger
+    networks:
+      - observability
+
+  service-orders:
+    build: ./service-orders
+    container_name: service-orders
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - USERS_URL=http://service-users:3002
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318/v1/traces
+      - OTEL_SERVICE_NAME=service-orders
+    depends_on:
+      - service-users
+      - jaeger
+    networks:
+      - observability
+
+  api-gateway:
+    build: ./api-gateway
+    container_name: api-gateway
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - ORDERS_URL=http://service-orders:3001
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4318/v1/traces
+      - OTEL_SERVICE_NAME=api-gateway
+    depends_on:
+      - service-orders
+      - jaeger
+    networks:
+      - observability
+
+volumes:
+  grafana-data:
+
+networks:
+  observability:
+    driver: bridge
